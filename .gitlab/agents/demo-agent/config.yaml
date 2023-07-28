@@ -1,0 +1,6 @@
+gitops:
+  manifest_projects:
+  - id: "37504530"
+    default_namespace: gitlab-agent
+    paths:
+    - glob: '/manifests/dev/*.{yaml,yml,json}'
