@@ -1,11 +1,40 @@
-name: Aqua
+name: CI
+
 on:
   push:
     branches:
       - main
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKER_REGISTRY_IMAGE }}
+  IMAGE_TAG: "latest"
+  #IMAGE_TAG: ${{ github.run_id }}
+
 jobs:
-  aqua:
-    name: Aqua scanner
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Run Aqua SAST Scan
+        uses: docker://aquasec/aqua-scanner
+        with:
+          args: trivy fs --scanners --sast .
+          # To customize which severities to scan for, add the following flag: --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          # To enable SAST scanning, add: --sast
+          # To enable reachability scanning, add: --reachability
+          # To enable npm/dotnet non-lock file scanning, add: --package-json / --dotnet-proj
+        env:
+          AQUA_KEY: ${{ secrets.AQUA_KEY }}
+          AQUA_SECRET: ${{ secrets.AQUA_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TRIVY_RUN_AS_PLUGIN: 'aqua'
+          # For http/https proxy configuration add env vars: HTTP_PROXY/HTTPS_PROXY, CA-CRET (path to CA certificate)
+
+  aqua_repo_scanning:
+    name: Aqua Repo Scanning
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,3 +54,102 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TRIVY_RUN_AS_PLUGIN: 'aqua'
           # For http/https proxy configuration add env vars: HTTP_PROXY/HTTPS_PROXY, CA-CRET (path to CA certificate)
+
+  build_app:
+    name: Build App
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js (Replace with appropriate setup for your application)
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14.21.3' # Replace with the desired Node.js version
+
+      - name: Install Dependencies
+        run: npm install # Replace with the appropriate command for your application
+
+      - name: Build the Application
+        run: npm run build # Replace with the appropriate build command for your application
+
+  build_image:
+    name: Build Image
+    runs-on: ubuntu-latest
+    needs: [build_app]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Docker
+        uses: docker/setup-docker@v2
+
+      - name: Build Docker Image
+        run: |
+          docker build --pull --no-cache -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
+          docker push ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+  aqua_image_scanning:
+    name: Aqua Image Scanning
+    runs-on: ubuntu-latest
+    needs: [build_image]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Run Aqua scanner
+        uses: docker://aquasec/aqua-scanner
+        with:
+          args: trivy fs --scanners config,vuln,secret .
+          # To customize which severities to scan for, add the following flag: --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          # To enable SAST scanning, add: --sast
+          # To enable reachability scanning, add: --reachability
+          # To enable npm/dotnet non-lock file scanning, add: --package-json / --dotnet-proj
+        env:
+          AQUA_KEY: ${{ secrets.AQUA_KEY }}
+          AQUA_SECRET: ${{ secrets.AQUA_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TRIVY_RUN_AS_PLUGIN: 'aqua'
+          # For http/https proxy configuration add env vars: HTTP_PROXY/HTTPS_PROXY, CA-CRET (path to CA certificate)
+
+      - name: Manifest Generation
+        run: |
+         export BILLY_SERVER=https://billy.codesec.aquasec.com
+         curl -sLo install.sh download.codesec.aquasec.com/billy/install.sh
+         curl -sLo install.sh.checksum https://github.com/argonsecurity/releases/releases/latest/download/install.sh.checksum
+         if ! cat install.sh.checksum | sha256sum ; then
+         echo "install.sh checksum failed"
+         exit 1
+         fi
+         BINDIR="." sh install.sh
+         rm install.sh install.sh.checksum
+         ./billy generate \
+         --access-token "${{ secrets.GITHUB_TOKEN }}" \
+         --aqua-key "${{ secrets.AQUA_KEY }}" \
+         --aqua-secret "${{ secrets.AQUA_SECRET }}" \
+         --artifact-path "aquajcampbell/mynodejs-app:${{ env.tag-version }}" 
+
+                  # The docker image name:tag of the newly built image
+                  # --artifact-path "my-image-name:${{ env.tag-version }}" 
+                  # OR the path to the root folder of your project. I.e my-repo/my-app 
+                  # --artifact-path "${{env.MY_APP_ROOT}}"
+
+  push_image:
+    name: Push Image
+    runs-on: ubuntu-latest
+    needs: [aqua_image_scanning]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Docker
+        uses: docker/setup-docker@v2
+
+      - name: Log in to Docker Hub
+        run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Push Docker Image
+        run: |
+          docker pull ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
