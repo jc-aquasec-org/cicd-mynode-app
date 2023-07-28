@@ -33,31 +33,22 @@ jobs:
           TRIVY_RUN_AS_PLUGIN: 'aqua'
           # For http/https proxy configuration add env vars: HTTP_PROXY/HTTPS_PROXY, CA-CRET (path to CA certificate)
 
-
+  aqua_repo_scanning:
     name: Aqua Repo Scanning
     runs-on: ubuntu-latest
+    needs: [sast]  # Wait for SAST to finish before running this job
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
 
-      - name: Run Aqua scanner
-        uses: docker://aquasec/aqua-scanner
-        with:
-          args: trivy fs --scanners config,vuln,secret .
-          # To customize which severities to scan for, add the following flag: --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          # To enable SAST scanning, add: --sast
-          # To enable reachability scanning, add: --reachability
-          # To enable npm/dotnet non-lock file scanning, add: --package-json / --dotnet-proj
-        env:
-          AQUA_KEY: ${{ secrets.AQUA_KEY }}
-          AQUA_SECRET: ${{ secrets.AQUA_SECRET }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TRIVY_RUN_AS_PLUGIN: 'aqua'
-          # For http/https proxy configuration add env vars: HTTP_PROXY/HTTPS_PROXY, CA-CRET (path to CA certificate)
+      - name: Install Aqua Scanner
+        run: |
+          # Add Aqua Scanner installation steps here
 
-
+  build_app:
     name: Build App
     runs-on: ubuntu-latest
+    needs: [aqua_repo_scanning]  # Wait for Aqua Repo Scanning to finish before running this job
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -73,7 +64,10 @@ jobs:
       - name: Build the Application
         run: npm run build # Replace with the appropriate build command for your application
 
+  # Rest of the jobs...
 
+
+  build_image:
     name: Build Image
     runs-on: ubuntu-latest
     needs: [build_app]
@@ -89,7 +83,7 @@ jobs:
           docker build --pull --no-cache -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
           docker push ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
-
+  aqua_image_scanning:
     name: Aqua Image Scanning
     runs-on: ubuntu-latest
     needs: [build_image]
@@ -134,10 +128,20 @@ jobs:
                   # OR the path to the root folder of your project. I.e my-repo/my-app 
                   # --artifact-path "${{env.MY_APP_ROOT}}"
 
+  manual_approval:
+    name: Manual Approval
+    runs-on: ubuntu-latest
+    needs: [aqua_image_scanning]
+    steps:
+      - name: Manual Approval
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.GH_TOKEN }}
+          approvers: sonnambulo
 
     name: Push Image
     runs-on: ubuntu-latest
-    needs: [aqua_image_scanning]
+    needs: [manual_approval]
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
